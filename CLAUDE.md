@@ -7,7 +7,11 @@ keeps the businesses with no website, and outputs a CSV call-list plus a visual
 coverage map of the areas already searched. It feeds the sales pipeline for the
 web-agency project (where the actual client sites are built — separate repo).
 
-Everything lives in one script: `sweep_leads.py`. The script is heavily commented;
+The tool now has two halves: (1) the **sweeper** (`sweep_leads.py`), and (2) a
+**shared, login-gated web map** (`coverage_map.html`) hosted on GitHub Pages and
+backed by a **Firebase Realtime Database**, so the same map — coverage, lead pins,
+notes, colours — is live on phone and PC. `sweep_leads.py` writes local files
+**and** (optionally) syncs each run to Firebase. The script is heavily commented;
 **this file is the project-level intent and the guardrails, not a restatement of
 the code.**
 
@@ -18,7 +22,33 @@ the code.**
 - The only thing edited per run is the CONFIG block at the top of the script:
   `RUN_NAME`, the four corner coordinates, and optionally `CELL_SIZE_KM`.
 - Outputs land in the working directory: `{RUN_NAME}_leads.csv`,
-  `coverage.geojson`, and `coverage_map.html`.
+  `coverage.geojson`, `coverage_data.js` / `leads_data.js` (data the map reads;
+  they also seed Firebase on first login and act as an offline fallback), and
+  `coverage_map.html`. **The data files and `*.csv` are gitignored** — they hold
+  prospect data and must never reach the public repo/Pages.
+- Optional cloud-sync env vars: `FIREBASE_API_KEY`, `FIREBASE_DB_URL`,
+  `FIREBASE_EMAIL`, `FIREBASE_PASSWORD`. With them set, each run pushes coverage +
+  leads to the shared map; unset, the script behaves exactly as before (local
+  files only).
+- The script **auto-loads a `.env` file beside it** (tiny stdlib loader — no
+  `python-dotenv`), so it runs from the VS Code ▶ Run button or any terminal
+  without `export`. Real environment variables override `.env`; values are
+  whitespace-trimmed.
+
+## Cloud sync & the shared map (Firebase)
+- **Hosting:** GitHub Pages serves the static shell (`coverage_map.html`). The
+  shell holds *no* prospect data — that lives in Firebase.
+- **Store:** one Firebase Realtime Database is the source of truth for all dynamic
+  data. Paths: `/coverage` + `/leads` (written by the script); `/state` +
+  `/manual` + `/geo` (written by the map — your edits/manual pins/geocode cache).
+- **Auth:** a single email/password user; DB rules lock read+write to that one
+  UID. That is what keeps a public Pages URL private.
+- **Script → DB:** `push_to_firebase()` signs in over the Identity Toolkit REST
+  API, then PUTs `/coverage` (overwrite) and PATCHes `/leads` (merge). REST only —
+  no Firebase SDK.
+- **Map ↔ DB:** the browser uses the Firebase JS SDK (compat build, from the
+  gstatic CDN) to read everything and write your edits live; devices stay in sync
+  via listeners.
 
 ## Design decisions — DO NOT regress these
 These were deliberate. Reversing them re-introduces bugs or cost blowups:
@@ -39,6 +69,22 @@ These were deliberate. Reversing them re-introduces bugs or cost blowups:
   bump the request into a higher (pricier) billing SKU.
 - **Dedup by `place_id`.** Businesses are deduped by id within a run. Preserve this
   when adding features.
+- **Leads sync is a MERGE; coverage is an OVERWRITE.** The script PATCHes `/leads`
+  (upsert) and PUTs the full cumulative `/coverage`. Never switch `/leads` to
+  overwrite (it would drop other runs' leads); never partially-merge `/coverage`.
+  Your on-map edits live in `/state` + `/manual`, which the script never touches —
+  so re-runs never clobber notes/colours/deletions. Keep that separation.
+- **Prospect data never enters the repo.** The data files are gitignored; the
+  public repo/Pages holds only code.
+- **The Firebase web config is public by design.** The `apiKey`/`databaseURL` in
+  `coverage_map.html` are not secrets — security is Auth + DB rules. Don't try to
+  hide them; never commit `FIREBASE_PASSWORD` (it lives only in `.env`).
+- **`requests`-only for Firebase too.** The Python side uses plain REST (sign-in +
+  RTDB). Don't add `firebase-admin` or other SDKs.
+- **The map stays a single static HTML file, no build step.** Leaflet + Firebase
+  load from CDNs so GitHub Pages can serve it directly.
+- **RTDB returns arrays as keyed objects** — the map normalizes `/coverage`
+  features back to an array on read. Keep that when touching coverage rendering.
 
 ## Cost & API limits to respect
 - `websiteUri` + phone put every request in the **Enterprise SKU tier**. Google's
@@ -63,10 +109,20 @@ These were deliberate. Reversing them re-introduces bugs or cost blowups:
 - `coverage_map.html` loads Leaflet and map tiles from the web — open it **online**.
   The CSV and GeoJSON are fully offline.
 - A missing `websiteUri` means no site **on the Google listing**
+- The map also needs internet for Firebase; the CSV and GeoJSON are still offline.
+- **Deploy = commit + push `coverage_map.html` to `master`**; GitHub Pages
+  redeploys the shell. Data files are not part of the deploy.
+- Phones cache the Pages shell aggressively — pull-to-refresh after a deploy.
+- Pin colours carry meaning: **green = not yet visited, yellow = visited,
+  red = attention, purple = already a client** (shown in the Info legend).
+  `COLOR_CYCLE` / `COLOR_HEX` / `COLOR_MEANING` must stay in sync.
+- The map's `setStatus('Loading…')` must be cleared on every load path, not only
+  as a geocoding side effect (this bit us once).
 
 ## If extending this tool
-- Keep it dependency-light: standard library plus `requests`. No backend, no heavy
-  frameworks.
+- Keep it dependency-light: standard library plus `requests`. No self-hosted
+  backend, no heavy frameworks, no build step — Firebase is a managed BaaS reached
+  over plain REST (Python) and a CDN SDK (the map).
 - Preserve the invariants above (tiling, dedup, budget guard, minimal field mask).
 - Likely future asks: curated/expanded business-type lists, an Excel output with
   clickable Maps links, or auto-generating a bounding box from a neighbourhood name.
@@ -75,3 +131,8 @@ These were deliberate. Reversing them re-introduces bugs or cost blowups:
 Pulling business name, address, and phone into a private outreach list is normal use
 of the official API. Treat the output as a working prospect list — not a database to
 redistribute or resell.
+
+Because the map is reachable at a public Pages URL and the database URL is visible
+in the shell, the **Firebase account password is the real gate** on your prospect
+list — keep it strong. The data stays private (behind login); still not a database
+to redistribute or resell.
