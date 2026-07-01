@@ -844,7 +844,7 @@ async function geocodeMissing() {
   }).filter(l =>
     !(typeof l.lat === 'number' && typeof l.lng === 'number') &&
     !GEO[l.id] && !geoAttempted.has(l.id) && l.address);
-  if (!toFetch.length) return;
+  if (!toFetch.length) { setStatus(''); return; }
 
   geocoding = true;
   for (let i = 0; i < toFetch.length; i++) {
@@ -1021,7 +1021,7 @@ function initData() {
   setStatus('Loading…');
   seedFromLocalFiles()
     .then(migrateLocalStorage)
-    .then(() => { attachListeners(); setTimeout(() => map.invalidateSize(), 120); })
+    .then(() => { attachListeners(); setStatus(''); setTimeout(() => map.invalidateSize(), 120); })
     .catch(e => { setStatus(''); console.error(e); });
 }
 
