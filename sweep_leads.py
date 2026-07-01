@@ -49,6 +49,10 @@ SETUP
     export FIREBASE_PASSWORD="..."
     python sweep_leads.py
     # then open the hosted coverage_map.html (GitHub Pages) and sign in
+    #
+    # Tip: instead of `export`, just keep these lines in a .env file beside the
+    # script — it is auto-loaded on startup, so the VS Code Run button works too.
+    # Real environment variables take precedence over the .env file.
 
 CLOUD SYNC
   If the FIREBASE_* vars are set, each run signs in over the Identity Toolkit
@@ -68,6 +72,28 @@ import re
 import time
 import requests
 
+
+def load_dotenv(path=None):
+    """Populate os.environ from a .env file beside this script (stdlib only).
+
+    Real environment variables always win. This lets `python sweep_leads.py`
+    work from any terminal or VS Code's Run button with no extra setup — the
+    keys in .env are picked up automatically. Values are whitespace-trimmed."""
+    if path is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+
+
+load_dotenv()
+
 API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
 
 # Firebase (optional): read from the environment like GOOGLE_MAPS_API_KEY. When
@@ -78,10 +104,10 @@ FIREBASE_EMAIL    = os.environ.get("FIREBASE_EMAIL")
 FIREBASE_PASSWORD = os.environ.get("FIREBASE_PASSWORD")
 
 # ======================= EDIT THIS SECTION =======================
-RUN_NAME = "ndg_monkland_03"        # label for this run (also names the CSV)
+RUN_NAME = "ndg_monkland_04"        # label for this run (also names the CSV)
 
-SOUTH, WEST = 45.464646, -73.6500     # SW corner of the box to sweep
-NORTH, EAST = 45.479994, -73.635027     # NE corner
+SOUTH, WEST = 45.480144, -73.629856     # SW corner of the box to sweep
+NORTH, EAST = 45.494857, -73.615952    # NE corner
 
 CELL_SIZE_KM = 2.0                  # starting cell size; raise it in sparse areas
 MAX_DEPTH = 5                       # times a capped cell may be subdivided

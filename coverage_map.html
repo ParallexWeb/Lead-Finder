@@ -17,15 +17,6 @@
 html, body { margin: 0; height: 100%; }
 #map { height: 100%; }
 
-.legend {
-  background: #fff;
-  padding: 8px 10px;
-  border-radius: 6px;
-  font: 13px sans-serif;
-  box-shadow: 0 1px 4px rgba(0,0,0,.3);
-}
-.legend b { display: block; margin-bottom: 4px; }
-
 #status-bar {
   position: fixed;
   top: 12px;
@@ -44,7 +35,7 @@ html, body { margin: 0; height: 100%; }
 
 #toggle-btn {
   position: fixed;
-  bottom: 20px;
+  bottom: 58px;
   left: 10px;
   z-index: 9999;
   background: #fff;
@@ -72,11 +63,14 @@ html, body { margin: 0; height: 100%; }
 
 #pin-popup {
   position: fixed;
+  box-sizing: border-box;
   background: #fff;
   border-radius: 8px;
   box-shadow: 0 4px 22px rgba(0,0,0,0.18);
   padding: 14px 16px 12px;
-  width: 282px;
+  width: min(282px, calc(100vw - 24px));   /* never wider than the screen */
+  max-height: calc(100vh - 16px);          /* never taller than the screen */
+  overflow-y: auto;                        /* scroll inside if it must */
   z-index: 9999;
   font: 13px/1.5 sans-serif;
   display: none;
@@ -248,7 +242,7 @@ html, body { margin: 0; height: 100%; }
 #hint {
   position: fixed;
   bottom: 20px;
-  left: 120px;
+  left: 10px;
   z-index: 9999;
   background: rgba(255,255,255,0.92);
   padding: 6px 11px;
@@ -308,7 +302,7 @@ html, body { margin: 0; height: 100%; }
 #signout-btn {
   position: fixed;
   top: 12px;
-  left: 12px;
+  right: 12px;
   z-index: 9999;
   background: #fff;
   border: none;
@@ -320,6 +314,35 @@ html, body { margin: 0; height: 100%; }
   display: none;
 }
 #signout-btn:hover { background: #f0f0f0; }
+
+/* Runs legend — a button that expands a (scrollable) list above it */
+.runs-control { text-align: right; }
+.runs-btn {
+  background: #fff;
+  border: none;
+  padding: 8px 14px;
+  border-radius: 6px;
+  box-shadow: 0 1px 5px rgba(0,0,0,0.35);
+  cursor: pointer;
+  font: 13px sans-serif;
+  user-select: none;
+}
+.runs-btn:hover { background: #f0f0f0; }
+.runs-list {
+  background: #fff;
+  border-radius: 6px;
+  box-shadow: 0 1px 5px rgba(0,0,0,0.35);
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  max-height: 40vh;      /* cap height... */
+  overflow-y: auto;      /* ...and scroll when there are many runs */
+  font: 13px sans-serif;
+  min-width: 130px;
+  text-align: left;
+}
+.runs-item { display: flex; align-items: center; gap: 7px; padding: 2px 0; white-space: nowrap; }
+.runs-dot { width: 11px; height: 11px; border-radius: 2px; flex-shrink: 0; }
+.runs-empty { color: #999; }
 </style>
 </head>
 <body>
@@ -464,10 +487,16 @@ function colorFor(run) {
   return 'hsl(' + h + ',70%,45%)';
 }
 
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g,
+    c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+}
+
 // ── Coverage polygons (re-rendered whenever /coverage changes) ────────────────
 let coverageLayer = null;
 let legendCtl     = null;
 let coverageFitDone = false;
+let legendOpen    = false;   // collapsed by default; persists across re-renders
 
 function renderCoverage() {
   if (coverageLayer) { map.removeLayer(coverageLayer); coverageLayer = null; }
@@ -494,10 +523,25 @@ function renderCoverage() {
   if (legendCtl) map.removeControl(legendCtl);
   legendCtl = L.control({position: 'bottomright'});
   legendCtl.onAdd = () => {
-    const d = L.DomUtil.create('div', 'legend');
-    d.innerHTML = '<b>Runs</b>' + (runs.length
-      ? runs.map(r => '<br><span style="color:' + colorFor(r) + '">&#9632;</span> ' + r).join('')
-      : '<br><span style="color:#999">none yet</span>');
+    const d = L.DomUtil.create('div', 'leaflet-control runs-control');
+    // The list sits above the button so it grows upward (never off the bottom)
+    // and scrolls internally once the runs outgrow its max height.
+    const items = runs.length
+      ? runs.map(r => '<div class="runs-item"><span class="runs-dot" style="background:'
+          + colorFor(r) + '"></span>' + escapeHtml(r) + '</div>').join('')
+      : '<div class="runs-empty">none yet</div>';
+    d.innerHTML =
+      '<div class="runs-list"' + (legendOpen ? '' : ' style="display:none"') + '>'
+        + items +
+      '</div>' +
+      '<button type="button" class="runs-btn">Runs (' + runs.length + ') &#9662;</button>';
+    L.DomEvent.disableClickPropagation(d);   // clicks stay in the control
+    L.DomEvent.disableScrollPropagation(d);  // scrolling the list won't zoom the map
+    const list = d.querySelector('.runs-list');
+    d.querySelector('.runs-btn').onclick = () => {
+      legendOpen = !legendOpen;
+      list.style.display = legendOpen ? '' : 'none';
+    };
     return d;
   };
   legendCtl.addTo(map);
@@ -624,15 +668,17 @@ function updateLinkOpen(url) {
 
 function positionPopup(latlng) {
   const pt = map.latLngToContainerPoint(latlng);
-  const mw = map.getContainer().offsetWidth;
-  const mh = map.getContainer().offsetHeight;
-  const pw = 282 + 20;
-  const ph = popup.offsetHeight || 240;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const pw = popup.offsetWidth, ph = popup.offsetHeight;   // real, rendered size
+  const M  = 8;                                            // gap from every edge
+  // Prefer the popup to the right of the pin; flip left if it wouldn't fit.
   let x = pt.x + 18;
+  if (x + pw > vw - M) x = pt.x - pw - 18;
   let y = pt.y - 20;
-  if (x + pw > mw - 8) x = pt.x - pw + 2;
-  if (y + ph > mh - 10) y = mh - ph - 10;
-  if (y < 8) y = 8;
+  // Final clamp keeps the whole box on-screen even for a centre pin on a narrow
+  // phone, where it fits on neither side of the marker.
+  x = Math.max(M, Math.min(x, vw - pw - M));
+  y = Math.max(M, Math.min(y, vh - ph - M));
   popup.style.left = x + 'px';
   popup.style.top  = y + 'px';
 }
