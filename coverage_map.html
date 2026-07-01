@@ -34,10 +34,6 @@ html, body { margin: 0; height: 100%; }
 }
 
 #toggle-btn {
-  position: fixed;
-  bottom: 58px;
-  left: 10px;
-  z-index: 9999;
   background: #fff;
   border: none;
   padding: 8px 14px;
@@ -239,18 +235,49 @@ html, body { margin: 0; height: 100%; }
 #np-save { background: #1a73e8 !important; color: #fff; border-color: #1a73e8 !important; }
 #np-save:hover { background: #1558b0 !important; }
 
-#hint {
+/* Bottom-left stack: Info legend (top) → Info button → Lead Pins button.
+   Anchored at the bottom, so opening the legend grows the stack upward and
+   never overlaps the Lead Pins button. */
+#bl-stack {
   position: fixed;
   bottom: 20px;
   left: 10px;
   z-index: 9999;
-  background: rgba(255,255,255,0.92);
-  padding: 6px 11px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+#info-btn {
+  background: #fff;
+  border: none;
+  padding: 8px 14px;
   border-radius: 6px;
-  box-shadow: 0 1px 5px rgba(0,0,0,0.25);
+  box-shadow: 0 1px 5px rgba(0,0,0,0.35);
+  cursor: pointer;
+  font: 13px sans-serif;
+  user-select: none;
+}
+#info-btn:hover { background: #f0f0f0; }
+#info-panel {
+  display: none;
+  background: #fff;
+  border-radius: 6px;
+  box-shadow: 0 1px 5px rgba(0,0,0,0.35);
+  padding: 9px 11px;
   font: 12px sans-serif;
-  color: #555;
-  pointer-events: none;
+  color: #333;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.legend-row { display: flex; align-items: center; gap: 9px; padding: 3px 0; white-space: nowrap; }
+.legend-pin {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2.5px solid #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+  flex-shrink: 0;
 }
 
 /* Login gate */
@@ -349,7 +376,11 @@ html, body { margin: 0; height: 100%; }
 <div id="map"></div>
 <div id="status-bar"></div>
 <button id="signout-btn">Sign out</button>
-<button id="toggle-btn"><span id="toggle-dot"></span>Lead Pins</button>
+<div id="bl-stack">
+  <div id="info-panel"></div>
+  <button id="info-btn">Info</button>
+  <button id="toggle-btn"><span id="toggle-dot"></span>Lead Pins</button>
+</div>
 
 <div id="pin-popup">
   <button id="popup-close">&#x2715;</button>
@@ -396,8 +427,6 @@ html, body { margin: 0; height: 100%; }
     <button id="np-save">Save pin</button>
   </div>
 </div>
-
-<div id="hint">Double-click an empty spot to add a pin</div>
 
 <div id="login-overlay">
   <div id="login-card">
@@ -553,8 +582,8 @@ function renderCoverage() {
 }
 
 // ── Pin colours ───────────────────────────────────────────────────────────────
-const COLOR_CYCLE = ['green', 'yellow', 'red'];
-const COLOR_HEX   = {green: '#4caf50', yellow: '#f5c518', red: '#e53935'};
+const COLOR_CYCLE = ['green', 'yellow', 'red', 'purple'];
+const COLOR_HEX   = {green: '#4caf50', yellow: '#f5c518', red: '#e53935', purple: '#9c27b0'};
 
 function makeIcon(colorName) {
   const c = COLOR_HEX[colorName] || COLOR_HEX.green;
@@ -599,7 +628,7 @@ function placeMarker(kind, rec) {
     L.DomEvent.stopPropagation(e);
     if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
     const cur  = getPinState(kind, rec.id).color || 'green';
-    const next = COLOR_CYCLE[(COLOR_CYCLE.indexOf(cur) + 1) % 3];
+    const next = COLOR_CYCLE[(COLOR_CYCLE.indexOf(cur) + 1) % COLOR_CYCLE.length];
     patchPinState(kind, rec.id, {color: next});
     marker.setIcon(makeIcon(next));
   });
@@ -773,6 +802,30 @@ function setPins(visible) {
 }
 
 toggleBtn.onclick = () => setPins(!pinsVisible);
+
+// ── Info legend (collapsible) ─────────────────────────────────────────────────
+// Meaning of each pin colour. Built from COLOR_CYCLE/COLOR_HEX so the legend
+// swatches always match the real pin icons.
+const COLOR_MEANING = {
+  green:  'Not yet visited',
+  yellow: 'Visited',
+  red:    'Attention',
+  purple: 'Already a client'
+};
+const infoBtn   = document.getElementById('info-btn');
+const infoPanel = document.getElementById('info-panel');
+let infoOpen = false;
+
+infoPanel.innerHTML = COLOR_CYCLE.map(name =>
+  '<div class="legend-row">'
+    + '<span class="legend-pin" style="background:' + (COLOR_HEX[name] || COLOR_HEX.green) + '"></span>'
+    + '<span>' + escapeHtml(COLOR_MEANING[name] || '') + '</span>'
+  + '</div>').join('');
+
+infoBtn.onclick = () => {
+  infoOpen = !infoOpen;
+  infoPanel.style.display = infoOpen ? 'block' : 'none';
+};
 
 // ── Geocoding (Nominatim, rate-limited, results cached in /geo) ───────────────
 function setStatus(msg) {
