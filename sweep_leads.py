@@ -42,8 +42,21 @@ COST
 SETUP
     pip install requests
     export GOOGLE_MAPS_API_KEY="your_key_here"
+    # optional — sync the map across devices (phone + PC) via Firebase:
+    export FIREBASE_API_KEY="..."     # Firebase web API key
+    export FIREBASE_DB_URL="https://<project>-default-rtdb.firebaseio.com"
+    export FIREBASE_EMAIL="you@example.com"
+    export FIREBASE_PASSWORD="..."
     python sweep_leads.py
-    # then open coverage_map.html in a browser (needs internet for the map)
+    # then open the hosted coverage_map.html (GitHub Pages) and sign in
+
+CLOUD SYNC
+  If the FIREBASE_* vars are set, each run signs in over the Identity Toolkit
+  REST API (no SDK — stays requests-only) and pushes coverage + leads to the
+  shared Realtime Database, so new runs show up on every device. Coverage is
+  overwritten with the full cumulative collection; leads are merged (upserted),
+  so your on-map edits, notes and deletions are never clobbered. With the vars
+  unset the script runs exactly as before, writing local files only.
 """
 
 import csv
@@ -51,16 +64,24 @@ import datetime
 import json
 import math
 import os
+import re
 import time
 import requests
 
 API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY")
 
-# ======================= EDIT THIS SECTION =======================
-RUN_NAME = "ndg_monkland_01"        # label for this run (also names the CSV)
+# Firebase (optional): read from the environment like GOOGLE_MAPS_API_KEY. When
+# all four are set, coverage + leads are synced to the shared map after a run.
+FIREBASE_API_KEY  = os.environ.get("FIREBASE_API_KEY")
+FIREBASE_DB_URL   = os.environ.get("FIREBASE_DB_URL")
+FIREBASE_EMAIL    = os.environ.get("FIREBASE_EMAIL")
+FIREBASE_PASSWORD = os.environ.get("FIREBASE_PASSWORD")
 
-SOUTH, WEST = 45.4650, -73.6350     # SW corner of the box to sweep
-NORTH, EAST = 45.4800, -73.6150     # NE corner
+# ======================= EDIT THIS SECTION =======================
+RUN_NAME = "ndg_monkland_03"        # label for this run (also names the CSV)
+
+SOUTH, WEST = 45.464646, -73.6500     # SW corner of the box to sweep
+NORTH, EAST = 45.479994, -73.635027     # NE corner
 
 CELL_SIZE_KM = 2.0                  # starting cell size; raise it in sparse areas
 MAX_DEPTH = 5                       # times a capped cell may be subdivided
@@ -75,16 +96,22 @@ BUSINESS_TYPES = [
 ]
 # =================================================================
 
-OUTPUT_FILE = f"{RUN_NAME}_leads.csv"
-COVERAGE_FILE = "coverage.geojson"
-MAP_FILE = "coverage_map.html"
+OUTPUT_FILE       = f"{RUN_NAME}_leads.csv"
+COVERAGE_FILE     = "coverage.geojson"
+MAP_FILE          = "coverage_map.html"
+COVERAGE_DATA_FILE = "coverage_data.js"
+LEADS_JS_FILE     = "leads_data.js"
 
 URL = "https://places.googleapis.com/v1/places:searchText"
 FIELD_MASK = ",".join([
     "places.id", "places.displayName", "places.formattedAddress",
     "places.nationalPhoneNumber", "places.websiteUri",
-    "places.googleMapsUri", "nextPageToken",
+    "places.googleMapsUri", "places.location", "nextPageToken",
 ])
+# NOTE: places.location is a Pro-tier field. The request already pulls
+# websiteUri + phone (Enterprise tier), and billing is set by the highest
+# tier requested, so adding location stays in the Enterprise SKU — no extra
+# cost. It lets every lead carry exact coordinates for the map's pins.
 
 events_used = 0
 seen_ids = set()
@@ -157,10 +184,13 @@ def record(places):
             continue
         seen_ids.add(pid)
         if "websiteUri" not in p:            # no website listed on Google
+            loc = p.get("location", {})
             leads.append({"name": p.get("displayName", {}).get("text", ""),
                           "address": p.get("formattedAddress", ""),
                           "phone": p.get("nationalPhoneNumber", ""),
-                          "maps_url": p.get("googleMapsUri", "")})
+                          "maps_url": p.get("googleMapsUri", ""),
+                          "lat": loc.get("latitude"),
+                          "lng": loc.get("longitude")})
 
 
 def sweep(text_query, rect, depth=0):
@@ -213,51 +243,98 @@ def load_coverage():
     return {"type": "FeatureCollection", "features": []}
 
 
-MAP_TEMPLATE = """<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Search coverage</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<style>html,body{margin:0;height:100%}#map{height:100%}
-.legend{background:#fff;padding:8px 10px;border-radius:6px;
-font:13px sans-serif;box-shadow:0 1px 4px rgba(0,0,0,.3)}
-.legend b{display:block;margin-bottom:4px}</style></head>
-<body><div id="map"></div><script>
-const DATA = __GEOJSON__;
-const map = L.map('map');
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-  {attribution:'&copy; OpenStreetMap'}).addTo(map);
-function colorFor(run){let h=0;for(const c of run)h=(h*31+c.charCodeAt(0))%360;
-  return 'hsl('+h+',70%,45%)';}
-const layer = L.geoJSON(DATA, {
-  style: f => ({color: colorFor(f.properties.run), weight:1,
-    fillColor: colorFor(f.properties.run), fillOpacity:0.25}),
-  onEachFeature: (f,l) => {const p=f.properties;
-    l.bindTooltip(p.run);
-    l.bindPopup('<b>'+p.run+'</b><br>CSV: '+p.csv+
-      '<br>Businesses: '+p.businesses+'<br>No-website leads: '+p.leads+
-      '<br>Requests: '+p.events+'<br>Searched: '+p.date);}
-}).addTo(map);
-if (DATA.features.length) map.fitBounds(layer.getBounds(),{padding:[20,20]});
-else map.setView([45.5,-73.65],11);
-const runs=[...new Set(DATA.features.map(f=>f.properties.run))];
-const legend=L.control({position:'bottomright'});
-legend.onAdd=()=>{const d=L.DomUtil.create('div','legend');
-  d.innerHTML='<b>Runs</b>'+runs.map(r=>'<span style="color:'+colorFor(r)+
-    '">&#9632;</span> '+r).join('<br>');return d;};
-legend.addTo(map);
-</script></body></html>"""
-
-
 def write_map(fc):
-    html = MAP_TEMPLATE.replace("__GEOJSON__", json.dumps(fc))
-    with open(MAP_FILE, "w", encoding="utf-8") as f:
-        f.write(html)
+    """Write coverage_data.js; generate coverage_map.html only on first run."""
+    with open(COVERAGE_DATA_FILE, "w", encoding="utf-8") as f:
+        f.write("/* Auto-generated by sweep_leads.py — do not edit by hand */\n")
+        f.write("window.COVERAGE_DATA = " + json.dumps(fc) + ";\n")
+    if not os.path.exists(MAP_FILE):
+        print(f"  Note: {MAP_FILE} not found. "
+              "Get it from the repo or create it manually.")
+
+
+def write_leads_js(new_leads):
+    """Merge new leads into leads_data.js, deduplicated by Google Maps CID."""
+    registry = {}
+    if os.path.exists(LEADS_JS_FILE):
+        with open(LEADS_JS_FILE, encoding="utf-8") as f:
+            content = f.read()
+        m = re.search(r"window\.LEADS_REGISTRY\s*=\s*(\[[\s\S]*?\]);", content)
+        if m:
+            try:
+                registry = {e["id"]: e for e in json.loads(m.group(1))}
+            except Exception:
+                pass
+
+    for lead in new_leads:
+        m = re.search(r"cid=(\d+)", lead.get("maps_url", ""))
+        if m:
+            cid = m.group(1)
+        else:
+            import hashlib
+            raw = (lead.get("name", "") + lead.get("address", "")).encode()
+            cid = str(int(hashlib.md5(raw).hexdigest()[:16], 16))
+        entry = {
+            "id":       cid,
+            "run":      RUN_NAME,
+            "name":     lead.get("name", ""),
+            "address":  lead.get("address", ""),
+            "phone":    lead.get("phone", ""),
+            "maps_url": lead.get("maps_url", ""),
+        }
+        if lead.get("lat") is not None and lead.get("lng") is not None:
+            entry["lat"] = round(lead["lat"], 6)
+            entry["lng"] = round(lead["lng"], 6)
+        registry[cid] = entry
+
+    entries = list(registry.values())
+    content = ("/* Auto-generated by sweep_leads.py — do not edit by hand */\n"
+               "window.LEADS_REGISTRY = "
+               + json.dumps(entries, ensure_ascii=False, indent=2) + ";\n")
+    with open(LEADS_JS_FILE, "w", encoding="utf-8") as f:
+        f.write(content)
+    return entries
+
+
+def _firebase_signin():
+    """Trade email+password for a short-lived ID token (Identity Toolkit REST)."""
+    url = ("https://identitytoolkit.googleapis.com/v1/accounts:"
+           "signInWithPassword?key=" + FIREBASE_API_KEY)
+    r = requests.post(url, timeout=30, json={
+        "email": FIREBASE_EMAIL, "password": FIREBASE_PASSWORD,
+        "returnSecureToken": True})
+    r.raise_for_status()
+    return r.json()["idToken"]
+
+
+def push_to_firebase(fc, lead_entries):
+    """Sync coverage (overwrite) and leads (merge) to the shared Realtime DB."""
+    if not all([FIREBASE_API_KEY, FIREBASE_DB_URL,
+                FIREBASE_EMAIL, FIREBASE_PASSWORD]):
+        print("  Firebase vars not set - skipping cloud sync "
+              "(map won't refresh on your phone).")
+        return
+    try:
+        auth = {"auth": _firebase_signin()}
+        base = FIREBASE_DB_URL.rstrip("/")
+        # Coverage: the full cumulative collection replaces the node.
+        r = requests.put(f"{base}/coverage.json", params=auth, json=fc, timeout=30)
+        r.raise_for_status()
+        # Leads: shallow-merge by id -> upsert; never deletes your on-map edits.
+        leads_obj = {e["id"]: e for e in lead_entries}
+        r = requests.patch(f"{base}/leads.json", params=auth,
+                           json=leads_obj, timeout=30)
+        r.raise_for_status()
+        print(f"  Firebase sync: {len(fc['features'])} cells, "
+              f"{len(leads_obj)} leads pushed - live on all devices.")
+    except Exception as e:
+        print(f"  Firebase sync failed ({e}); local files were still written.")
 
 
 def save_outputs(new_features):
     with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["name", "address", "phone", "maps_url"])
+        w = csv.DictWriter(f, fieldnames=["name", "address", "phone", "maps_url"],
+                           extrasaction="ignore")   # lat/lng kept for the map only
         w.writeheader()
         w.writerows(leads)
     fc = load_coverage()
@@ -268,6 +345,8 @@ def save_outputs(new_features):
     with open(COVERAGE_FILE, "w", encoding="utf-8") as f:
         json.dump(fc, f)
     write_map(fc)
+    entries = write_leads_js(leads)
+    push_to_firebase(fc, entries)
 
 
 def main():

@@ -1,0 +1,941 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Lead Coverage Map</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<!-- Local data files: present on the PC (seed the DB on first login), absent on
+     GitHub Pages by design so the prospect list never ships in the public repo. -->
+<script src="coverage_data.js"></script>
+<script src="leads_data.js"></script>
+<style>
+html, body { margin: 0; height: 100%; }
+#map { height: 100%; }
+
+.legend {
+  background: #fff;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font: 13px sans-serif;
+  box-shadow: 0 1px 4px rgba(0,0,0,.3);
+}
+.legend b { display: block; margin-bottom: 4px; }
+
+#status-bar {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.72);
+  color: #fff;
+  padding: 6px 18px;
+  border-radius: 20px;
+  font: 13px sans-serif;
+  z-index: 9999;
+  display: none;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+#toggle-btn {
+  position: fixed;
+  bottom: 20px;
+  left: 10px;
+  z-index: 9999;
+  background: #fff;
+  border: none;
+  padding: 8px 14px;
+  border-radius: 6px;
+  box-shadow: 0 1px 5px rgba(0,0,0,0.35);
+  cursor: pointer;
+  font: 13px sans-serif;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  user-select: none;
+}
+#toggle-btn:hover { background: #f0f0f0; }
+#toggle-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(0,0,0,0.18);
+  flex-shrink: 0;
+  background: #4caf50;
+  transition: background 0.2s;
+}
+
+#pin-popup {
+  position: fixed;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 4px 22px rgba(0,0,0,0.18);
+  padding: 14px 16px 12px;
+  width: 282px;
+  z-index: 9999;
+  font: 13px/1.5 sans-serif;
+  display: none;
+}
+#popup-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 19px;
+  color: #aaa;
+  line-height: 1;
+  padding: 0 2px;
+}
+#popup-close:hover { color: #555; }
+#popup-name { font-size: 14px; font-weight: 700; margin: 0 24px 5px 0; color: #111; }
+#popup-addr { color: #666; font-size: 12px; margin-bottom: 2px; }
+#popup-phone { color: #333; font-size: 12px; margin-bottom: 3px; }
+#popup-maps-link {
+  color: #1a73e8;
+  font-size: 11px;
+  text-decoration: none;
+  display: inline-block;
+  margin-bottom: 9px;
+}
+#popup-maps-link:hover { text-decoration: underline; }
+.note-label { font-weight: 600; font-size: 12px; margin-bottom: 3px; color: #444; }
+#popup-note {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 5px 7px;
+  font: 12px/1.4 sans-serif;
+  color: #333;
+  resize: vertical;
+  min-height: 58px;
+}
+#popup-note:focus { outline: none; border-color: #aaa; }
+.popup-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+#popup-delete {
+  color: #1a73e8;
+  cursor: pointer;
+  font-size: 12px;
+  text-decoration: underline;
+}
+#popup-delete:hover { color: #1558b0; }
+#popup-confirm {
+  display: none;
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid #eee;
+}
+#popup-confirm p { margin: 0 0 9px; font-size: 12px; color: #444; line-height: 1.45; }
+.confirm-btns { display: flex; gap: 8px; }
+.confirm-btns button {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  font: 12px sans-serif;
+  background: #fff;
+}
+.confirm-btns button:hover { background: #f5f5f5; }
+#popup-yes { background: #e53935 !important; color: #fff; border-color: #e53935 !important; }
+#popup-yes:hover { background: #c62828 !important; }
+
+/* Link row in the pin popup */
+.field-label {
+  font-weight: 600;
+  font-size: 12px;
+  margin: 9px 0 3px;
+  color: #444;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+#popup-link-open {
+  color: #1a73e8;
+  font-size: 11px;
+  font-weight: 400;
+  text-decoration: none;
+  display: none;
+}
+#popup-link-open:hover { text-decoration: underline; }
+#popup-link {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 5px 7px;
+  font: 12px/1.4 sans-serif;
+  color: #333;
+}
+#popup-link:focus { outline: none; border-color: #aaa; }
+
+/* Add-pin modal */
+#np-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.32);
+  z-index: 10000;
+  display: none;
+}
+#np-form {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.3);
+  padding: 18px 20px 16px;
+  width: 300px;
+  z-index: 10001;
+  font: 13px sans-serif;
+  display: none;
+}
+#np-form h3 { margin: 0 0 12px; font-size: 15px; color: #111; }
+#np-form label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #555;
+  margin: 9px 0 3px;
+}
+#np-form label .req { color: #e53935; }
+#np-form input, #np-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font: 12px/1.4 sans-serif;
+  color: #333;
+}
+#np-form textarea { resize: vertical; min-height: 50px; }
+#np-form input:focus, #np-form textarea:focus { outline: none; border-color: #999; }
+#np-form label .np-hint { font-weight: 400; color: #999; }
+#np-coords {
+  background: #f6f6f6;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: #222;
+  cursor: text;
+}
+#np-error { color: #e53935; font-size: 12px; margin-top: 8px; display: none; }
+.np-btns { display: flex; gap: 8px; margin-top: 14px; }
+.np-btns button {
+  flex: 1;
+  padding: 7px 8px;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  cursor: pointer;
+  font: 13px sans-serif;
+  background: #fff;
+}
+.np-btns button:hover { background: #f5f5f5; }
+#np-save { background: #1a73e8 !important; color: #fff; border-color: #1a73e8 !important; }
+#np-save:hover { background: #1558b0 !important; }
+
+#hint {
+  position: fixed;
+  bottom: 20px;
+  left: 120px;
+  z-index: 9999;
+  background: rgba(255,255,255,0.92);
+  padding: 6px 11px;
+  border-radius: 6px;
+  box-shadow: 0 1px 5px rgba(0,0,0,0.25);
+  font: 12px sans-serif;
+  color: #555;
+  pointer-events: none;
+}
+
+/* Login gate */
+#login-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20000;
+  background: #f4f5f7;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font: 14px sans-serif;
+}
+#login-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 26px 26px 22px;
+  width: 300px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.15);
+}
+#login-card h2 { margin: 0 0 4px; font-size: 18px; color: #111; }
+#login-card p.sub { margin: 0 0 16px; font-size: 12px; color: #888; }
+#login-card label { display: block; font-size: 11px; font-weight: 600; color: #555; margin: 10px 0 3px; }
+#login-card input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 9px 10px;
+  font: 13px sans-serif;
+  color: #333;
+}
+#login-card input:focus { outline: none; border-color: #1a73e8; }
+#login-btn {
+  width: 100%;
+  margin-top: 16px;
+  padding: 10px;
+  border: none;
+  border-radius: 6px;
+  background: #1a73e8;
+  color: #fff;
+  font: 600 14px sans-serif;
+  cursor: pointer;
+}
+#login-btn:hover { background: #1558b0; }
+#login-btn:disabled { opacity: 0.6; cursor: default; }
+#login-error { color: #e53935; font-size: 12px; margin-top: 10px; min-height: 15px; }
+
+#signout-btn {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 9999;
+  background: #fff;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  box-shadow: 0 1px 5px rgba(0,0,0,0.3);
+  cursor: pointer;
+  font: 12px sans-serif;
+  display: none;
+}
+#signout-btn:hover { background: #f0f0f0; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="status-bar"></div>
+<button id="signout-btn">Sign out</button>
+<button id="toggle-btn"><span id="toggle-dot"></span>Lead Pins</button>
+
+<div id="pin-popup">
+  <button id="popup-close">&#x2715;</button>
+  <div id="popup-name"></div>
+  <div id="popup-addr"></div>
+  <div id="popup-phone"></div>
+  <a id="popup-maps-link" href="#" target="_blank" rel="noopener">&#x2197; Open in Google Maps</a>
+  <div class="field-label">Link
+    <a id="popup-link-open" href="#" target="_blank" rel="noopener">&#x2197; open</a>
+  </div>
+  <input id="popup-link" type="text" placeholder="Paste a URL for this business&#8230;">
+  <div class="field-label">Note</div>
+  <textarea id="popup-note" placeholder="Write a note&#8230;"></textarea>
+  <div class="popup-footer">
+    <span id="popup-delete">delete</span>
+  </div>
+  <div id="popup-confirm">
+    <p>Are you sure you want to remove this location from the map?</p>
+    <div class="confirm-btns">
+      <button id="popup-no">No</button>
+      <button id="popup-yes">Yes</button>
+    </div>
+  </div>
+</div>
+
+<div id="np-overlay"></div>
+<div id="np-form">
+  <h3>Add a pin</h3>
+  <label>Coordinates <span class="np-hint">(lat, lng — click to select, copy for the script)</span></label>
+  <input id="np-coords" type="text" readonly title="Click to select, then copy">
+  <label>Name <span class="req">*</span></label>
+  <input id="np-name" type="text" placeholder="Business name (required)">
+  <label>Address</label>
+  <input id="np-address" type="text" placeholder="Optional">
+  <label>Phone</label>
+  <input id="np-phone" type="text" placeholder="Optional">
+  <label>Link</label>
+  <input id="np-link" type="text" placeholder="Optional — a URL for this business">
+  <label>Note</label>
+  <textarea id="np-note" placeholder="Optional"></textarea>
+  <div id="np-error">Name is required.</div>
+  <div class="np-btns">
+    <button id="np-cancel">Cancel</button>
+    <button id="np-save">Save pin</button>
+  </div>
+</div>
+
+<div id="hint">Double-click an empty spot to add a pin</div>
+
+<div id="login-overlay">
+  <div id="login-card">
+    <h2>Lead Coverage Map</h2>
+    <p class="sub">Sign in to view and edit your map.</p>
+    <label>Email</label>
+    <input id="login-email" type="email" autocomplete="username" placeholder="you@example.com">
+    <label>Password</label>
+    <input id="login-password" type="password" autocomplete="current-password" placeholder="&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;">
+    <button id="login-btn">Sign in</button>
+    <div id="login-error"></div>
+  </div>
+</div>
+
+<script>
+// ── Fallbacks: these locals seed the DB on first login, and are simply absent
+//    (harmless 404) when the page is served from GitHub Pages. ────────────────
+if (typeof window.COVERAGE_DATA === 'undefined')
+  window.COVERAGE_DATA = {type: 'FeatureCollection', features: []};
+if (typeof window.LEADS_REGISTRY === 'undefined')
+  window.LEADS_REGISTRY = [];
+
+// ── Firebase ──────────────────────────────────────────────────────────────────
+// The web config is public by design; access is enforced by the database's
+// security rules (locked to your account), not by hiding these values.
+const firebaseConfig = {
+  apiKey:            "AIzaSyDe5Jmcfxml_racRafkGTKLwiZnOyekiGE",
+  authDomain:        "lead-finder-a4a09.firebaseapp.com",
+  databaseURL:       "https://lead-finder-a4a09-default-rtdb.firebaseio.com",
+  projectId:         "lead-finder-a4a09",
+  storageBucket:     "lead-finder-a4a09.firebasestorage.app",
+  messagingSenderId: "723672230751",
+  appId:             "1:723672230751:web:2d4b22391aaf49786e24ea"
+};
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db   = firebase.database();
+
+// ── In-memory mirror of the database, kept live by the listeners below ────────
+//   COVERAGE : the searched-cell FeatureCollection      (written by the script)
+//   LEADS    : id -> {name,address,phone,maps_url,lat,lng,run}  (script)
+//   STATE    : id -> {color,note,link,deleted}   — your edits to lead pins
+//   MANUAL   : id -> {…hand-added pin…}          — your manual pins
+//   GEO      : id -> {lat,lng}                   — geocode cache
+let COVERAGE = {type: 'FeatureCollection', features: []};
+let LEADS  = {};
+let STATE  = {};
+let MANUAL = {};
+let GEO    = {};
+
+function debounce(fn, ms) {
+  let t = null;
+  return function () { clearTimeout(t); t = setTimeout(fn, ms); };
+}
+
+// Editable per-pin state, unified across kinds. Registry pins keep their edits
+// in STATE[id]; manual pins carry every field in MANUAL[id].
+function getPinState(kind, id) {
+  if (kind === 'manual') return MANUAL[id] || {};
+  return STATE[id] || {};
+}
+function patchPinState(kind, id, patch) {
+  if (kind === 'manual') {
+    MANUAL[id] = Object.assign({}, MANUAL[id] || {}, patch);
+    db.ref('manual/' + id).update(patch);
+  } else {
+    STATE[id] = Object.assign({}, STATE[id] || {}, patch);
+    db.ref('state/' + id).update(patch);
+  }
+}
+function removePin(kind, id) {
+  if (kind === 'manual') { delete MANUAL[id]; db.ref('manual/' + id).remove(); }
+  else { STATE[id] = Object.assign({}, STATE[id] || {}, {deleted: true});
+         db.ref('state/' + id).update({deleted: true}); }
+}
+
+// ── Map setup ─────────────────────────────────────────────────────────────────
+const map = L.map('map', {doubleClickZoom: false});  // dbl-click is "add pin"
+map.setView([45.48, -73.635], 13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+  {attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'})
+  .addTo(map);
+
+function colorFor(run) {
+  let h = 0;
+  for (const c of run) h = (h * 31 + c.charCodeAt(0)) % 360;
+  return 'hsl(' + h + ',70%,45%)';
+}
+
+// ── Coverage polygons (re-rendered whenever /coverage changes) ────────────────
+let coverageLayer = null;
+let legendCtl     = null;
+let coverageFitDone = false;
+
+function renderCoverage() {
+  if (coverageLayer) { map.removeLayer(coverageLayer); coverageLayer = null; }
+  coverageLayer = L.geoJSON(COVERAGE, {
+    style: f => ({
+      color: colorFor(f.properties.run), weight: 1,
+      fillColor: colorFor(f.properties.run), fillOpacity: 0.25
+    }),
+    onEachFeature: (f, l) => {
+      const p = f.properties;
+      l.bindTooltip(p.run);
+      l.bindPopup(
+        '<b>' + p.run + '</b><br>CSV: ' + p.csv +
+        '<br>Businesses: ' + p.businesses +
+        '<br>No-website leads: ' + p.leads +
+        '<br>Requests: ' + p.events +
+        '<br>Searched: ' + p.date
+      );
+    }
+  }).addTo(map);
+
+  const feats = COVERAGE.features || [];
+  const runs = [...new Set(feats.map(f => f.properties.run))];
+  if (legendCtl) map.removeControl(legendCtl);
+  legendCtl = L.control({position: 'bottomright'});
+  legendCtl.onAdd = () => {
+    const d = L.DomUtil.create('div', 'legend');
+    d.innerHTML = '<b>Runs</b>' + (runs.length
+      ? runs.map(r => '<br><span style="color:' + colorFor(r) + '">&#9632;</span> ' + r).join('')
+      : '<br><span style="color:#999">none yet</span>');
+    return d;
+  };
+  legendCtl.addTo(map);
+
+  if (!coverageFitDone && feats.length) {
+    map.fitBounds(coverageLayer.getBounds(), {padding: [20, 20]});
+    coverageFitDone = true;
+  }
+}
+
+// ── Pin colours ───────────────────────────────────────────────────────────────
+const COLOR_CYCLE = ['green', 'yellow', 'red'];
+const COLOR_HEX   = {green: '#4caf50', yellow: '#f5c518', red: '#e53935'};
+
+function makeIcon(colorName) {
+  const c = COLOR_HEX[colorName] || COLOR_HEX.green;
+  return L.divIcon({
+    className: '',
+    html: '<div style="width:14px;height:14px;border-radius:50%;background:' + c +
+          ';border:2.5px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,0.45)"></div>',
+    iconSize:   [14, 14],
+    iconAnchor: [7, 7]
+  });
+}
+
+// ── Pins layer ────────────────────────────────────────────────────────────────
+const pinsGroup = L.layerGroup().addTo(map);
+const markerMap = {};   // id → L.marker
+
+// Place a pin. `kind` is 'registry' or 'manual'; `rec` carries the static
+// fields (name/address/phone/maps_url/lat/lng). Editable bits come from state.
+function placeMarker(kind, rec) {
+  const ps = getPinState(kind, rec.id);
+  if (ps.deleted) return;
+  if (typeof rec.lat !== 'number' || typeof rec.lng !== 'number') return;
+
+  const colorName = COLOR_CYCLE.includes(ps.color) ? ps.color : 'green';
+  const marker = L.marker([rec.lat, rec.lng], {
+    icon: makeIcon(colorName),
+    title: rec.name,
+    zIndexOffset: 200
+  });
+
+  let clickTimer = null;
+
+  marker.on('click', e => {
+    L.DomEvent.stopPropagation(e);
+    clickTimer = setTimeout(() => {
+      clickTimer = null;
+      showPopup(kind, rec, marker);
+    }, 260);
+  });
+
+  marker.on('dblclick', e => {
+    L.DomEvent.stopPropagation(e);
+    if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+    const cur  = getPinState(kind, rec.id).color || 'green';
+    const next = COLOR_CYCLE[(COLOR_CYCLE.indexOf(cur) + 1) % 3];
+    patchPinState(kind, rec.id, {color: next});
+    marker.setIcon(makeIcon(next));
+  });
+
+  pinsGroup.addLayer(marker);
+  markerMap[rec.id] = marker;
+}
+
+// Give a registry lead coordinates from its own fields or the geocode cache.
+function withCoords(lead) {
+  if (typeof lead.lat === 'number' && typeof lead.lng === 'number') return lead;
+  const g = GEO[lead.id];
+  if (g) return Object.assign({}, lead, {lat: g.lat, lng: g.lng});
+  return lead;   // still missing — placeMarker will skip it until geocoded
+}
+
+// Rebuild every pin from the in-memory caches. Cheap at this scale. Deferred
+// while a popup is open so a background sync never yanks the pin you're editing.
+let pendingRender = false;
+function renderPins() {
+  if (activeId) { pendingRender = true; return; }
+  pinsGroup.clearLayers();
+  for (const k in markerMap) delete markerMap[k];
+  Object.keys(LEADS).forEach(id => {
+    const lead = LEADS[id]; lead.id = lead.id || id;
+    placeMarker('registry', withCoords(lead));
+  });
+  Object.keys(MANUAL).forEach(id => {
+    const rec = MANUAL[id]; rec.id = rec.id || id;
+    placeMarker('manual', rec);
+  });
+}
+const scheduleRenderPins = debounce(renderPins, 150);
+
+// ── Popup ─────────────────────────────────────────────────────────────────────
+let activeId   = null;
+let activeKind = null;
+let noteTimer  = null;
+let linkTimer  = null;
+
+const popup    = document.getElementById('pin-popup');
+const pName    = document.getElementById('popup-name');
+const pAddr    = document.getElementById('popup-addr');
+const pPhone   = document.getElementById('popup-phone');
+const pMaps    = document.getElementById('popup-maps-link');
+const pLink    = document.getElementById('popup-link');
+const pLinkOpen = document.getElementById('popup-link-open');
+const pNote    = document.getElementById('popup-note');
+const pDelete  = document.getElementById('popup-delete');
+const pConfirm = document.getElementById('popup-confirm');
+const pNo      = document.getElementById('popup-no');
+const pYes     = document.getElementById('popup-yes');
+const pClose   = document.getElementById('popup-close');
+
+// Normalize a user-pasted URL so the "open" link works without a scheme.
+function hrefFor(url) {
+  url = (url || '').trim();
+  if (!url) return '';
+  return /^https?:\/\//i.test(url) ? url : 'https://' + url;
+}
+function updateLinkOpen(url) {
+  const h = hrefFor(url);
+  if (h) { pLinkOpen.href = h; pLinkOpen.style.display = 'inline'; }
+  else   { pLinkOpen.style.display = 'none'; }
+}
+
+function positionPopup(latlng) {
+  const pt = map.latLngToContainerPoint(latlng);
+  const mw = map.getContainer().offsetWidth;
+  const mh = map.getContainer().offsetHeight;
+  const pw = 282 + 20;
+  const ph = popup.offsetHeight || 240;
+  let x = pt.x + 18;
+  let y = pt.y - 20;
+  if (x + pw > mw - 8) x = pt.x - pw + 2;
+  if (y + ph > mh - 10) y = mh - ph - 10;
+  if (y < 8) y = 8;
+  popup.style.left = x + 'px';
+  popup.style.top  = y + 'px';
+}
+
+function showPopup(kind, rec, marker) {
+  resetConfirm();
+  activeId   = rec.id;
+  activeKind = kind;
+  const ps = getPinState(kind, rec.id);
+  pName.textContent  = rec.name;
+  pAddr.textContent  = rec.address || '';
+  pAddr.style.display = rec.address ? '' : 'none';
+  pPhone.textContent = rec.phone || '';
+  pPhone.style.display = rec.phone ? '' : 'none';
+  if (rec.maps_url) { pMaps.href = rec.maps_url; pMaps.style.display = ''; }
+  else              { pMaps.style.display = 'none'; }
+  pLink.value = ps.link || '';
+  updateLinkOpen(ps.link);
+  pNote.value = ps.note || '';
+  popup.style.display = 'block';
+  positionPopup(marker.getLatLng());
+}
+
+function closePopup() {
+  popup.style.display = 'none';
+  activeId = null;
+  activeKind = null;
+  resetConfirm();
+  if (pendingRender) { pendingRender = false; renderPins(); }
+}
+
+function resetConfirm() {
+  pConfirm.style.display = 'none';
+  pDelete.style.display  = '';
+}
+
+pClose.onclick = closePopup;
+map.on('click', closePopup);
+
+// Prevent popup clicks from bubbling to map and closing itself
+popup.addEventListener('click',     e => e.stopPropagation());
+popup.addEventListener('mousedown', e => e.stopPropagation());
+
+// Note autosave (debounced 400 ms)
+pNote.addEventListener('input', () => {
+  clearTimeout(noteTimer);
+  noteTimer = setTimeout(() => {
+    if (!activeId) return;
+    patchPinState(activeKind, activeId, {note: pNote.value});
+  }, 400);
+});
+
+// Link autosave (debounced 400 ms)
+pLink.addEventListener('input', () => {
+  updateLinkOpen(pLink.value);
+  clearTimeout(linkTimer);
+  linkTimer = setTimeout(() => {
+    if (!activeId) return;
+    patchPinState(activeKind, activeId, {link: pLink.value});
+  }, 400);
+});
+
+// Delete flow
+pDelete.onclick = () => {
+  pDelete.style.display  = 'none';
+  pConfirm.style.display = 'block';
+};
+pNo.onclick = resetConfirm;
+pYes.onclick = () => {
+  if (!activeId) return;
+  removePin(activeKind, activeId);
+  const m = markerMap[activeId];
+  if (m) { pinsGroup.removeLayer(m); delete markerMap[activeId]; }
+  closePopup();
+};
+
+// ── Toggle button ─────────────────────────────────────────────────────────────
+let pinsVisible = true;
+const toggleBtn = document.getElementById('toggle-btn');
+const toggleDot = document.getElementById('toggle-dot');
+
+function setPins(visible) {
+  pinsVisible = visible;
+  if (visible) {
+    map.addLayer(pinsGroup);
+    toggleDot.style.background = '#4caf50';
+  } else {
+    map.removeLayer(pinsGroup);
+    toggleDot.style.background = '#bbb';
+    closePopup();
+  }
+}
+
+toggleBtn.onclick = () => setPins(!pinsVisible);
+
+// ── Geocoding (Nominatim, rate-limited, results cached in /geo) ───────────────
+function setStatus(msg) {
+  const bar = document.getElementById('status-bar');
+  if (msg) { bar.textContent = msg; bar.style.display = 'block'; }
+  else      { bar.style.display = 'none'; }
+}
+
+let geocoding = false;
+const geoAttempted = new Set();
+
+async function geocodeMissing() {
+  if (geocoding) return;
+  const toFetch = Object.keys(LEADS).map(id => {
+    const l = LEADS[id]; l.id = l.id || id; return l;
+  }).filter(l =>
+    !(typeof l.lat === 'number' && typeof l.lng === 'number') &&
+    !GEO[l.id] && !geoAttempted.has(l.id) && l.address);
+  if (!toFetch.length) return;
+
+  geocoding = true;
+  for (let i = 0; i < toFetch.length; i++) {
+    const lead = toFetch[i];
+    geoAttempted.add(lead.id);
+    setStatus('Locating pins… ' + (i + 1) + ' / ' + toFetch.length);
+    try {
+      const url  = 'https://nominatim.openstreetmap.org/search?'
+                 + 'q=' + encodeURIComponent(lead.address)
+                 + '&format=json&limit=1&countrycodes=ca';
+      const resp = await fetch(url, {headers: {'Accept': 'application/json'}});
+      const data = await resp.json();
+      if (data.length > 0)
+        await db.ref('geo/' + lead.id).set({lat: +data[0].lat, lng: +data[0].lon});
+    } catch (_) { /* skip on network error; retried on next data change */ }
+
+    if (i < toFetch.length - 1)
+      await new Promise(r => setTimeout(r, 1100));   // Nominatim: 1 req/sec
+  }
+  setStatus('');
+  geocoding = false;
+}
+
+// ── Add a pin manually (double-click an empty point on the map) ───────────────
+let newPinLatLng = null;
+const npOverlay = document.getElementById('np-overlay');
+const npForm    = document.getElementById('np-form');
+const npCoords  = document.getElementById('np-coords');
+const npName    = document.getElementById('np-name');
+const npAddress = document.getElementById('np-address');
+const npPhone   = document.getElementById('np-phone');
+const npLink    = document.getElementById('np-link');
+const npNote    = document.getElementById('np-note');
+const npError   = document.getElementById('np-error');
+const npSave    = document.getElementById('np-save');
+const npCancel  = document.getElementById('np-cancel');
+
+function openNewPin(latlng) {
+  newPinLatLng = latlng;
+  map.closePopup();   // clear any coverage-polygon popup underneath
+  closePopup();       // clear any open pin popup
+  npCoords.value = latlng.lat.toFixed(6) + ', ' + latlng.lng.toFixed(6);
+  npName.value = ''; npAddress.value = ''; npPhone.value = '';
+  npLink.value = ''; npNote.value = '';
+  npError.style.display = 'none';
+  npOverlay.style.display = 'block';
+  npForm.style.display = 'block';
+  npName.focus();
+}
+
+// Click the read-only coordinates field to select it for easy copying.
+npCoords.onclick = () => npCoords.select();
+function closeNewPin() {
+  npOverlay.style.display = 'none';
+  npForm.style.display = 'none';
+  newPinLatLng = null;
+}
+
+map.on('dblclick', e => openNewPin(e.latlng));
+npCancel.onclick = closeNewPin;
+npOverlay.onclick = closeNewPin;
+npForm.addEventListener('click', e => e.stopPropagation());
+
+npSave.onclick = () => {
+  const name = npName.value.trim();
+  if (!name) { npError.style.display = 'block'; npName.focus(); return; }
+  if (!newPinLatLng) return;
+
+  const lat = +newPinLatLng.lat.toFixed(6);
+  const lng = +newPinLatLng.lng.toFixed(6);
+  const rec = {
+    id:       'manual_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+    name:     name,
+    address:  npAddress.value.trim(),
+    phone:    npPhone.value.trim(),
+    link:     npLink.value.trim(),
+    note:     npNote.value.trim(),
+    color:    'green',
+    maps_url: 'https://www.google.com/maps/search/?api=1&query=' + lat + ',' + lng,
+    lat:      lat,
+    lng:      lng
+  };
+  MANUAL[rec.id] = rec;
+  db.ref('manual/' + rec.id).set(rec);
+
+  if (!pinsVisible) setPins(true);   // make sure the new pin is visible
+  placeMarker('manual', rec);
+  closeNewPin();
+};
+
+// Save the new-pin form with Enter (except inside the textarea).
+npForm.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') { e.preventDefault(); npSave.onclick(); }
+  if (e.key === 'Escape') closeNewPin();
+});
+
+// ── Login gate + data wiring ──────────────────────────────────────────────────
+const loginOverlay = document.getElementById('login-overlay');
+const loginEmail   = document.getElementById('login-email');
+const loginPass    = document.getElementById('login-password');
+const loginBtn     = document.getElementById('login-btn');
+const loginError   = document.getElementById('login-error');
+const signoutBtn   = document.getElementById('signout-btn');
+
+function doLogin() {
+  loginError.textContent = '';
+  loginBtn.disabled = true;
+  auth.signInWithEmailAndPassword(loginEmail.value.trim(), loginPass.value)
+    .catch(e => { loginError.textContent = e.message; })
+    .finally(() => { loginBtn.disabled = false; });
+}
+loginBtn.onclick = doLogin;
+[loginEmail, loginPass].forEach(el =>
+  el.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); }));
+signoutBtn.onclick = () => auth.signOut();
+
+// One-time: copy this browser's old localStorage edits into the database.
+function migrateLocalStorage() {
+  if (localStorage.getItem('lfinder_migrated')) return Promise.resolve();
+  const jobs = [];
+  try {
+    const s = JSON.parse(localStorage.getItem('lfinder_state')  || '{}');
+    if (Object.keys(s).length) jobs.push(db.ref('state').update(s));
+    const g = JSON.parse(localStorage.getItem('lfinder_geo')    || '{}');
+    if (Object.keys(g).length) jobs.push(db.ref('geo').update(g));
+    const m = JSON.parse(localStorage.getItem('lfinder_manual') || '[]');
+    if (m.length) {
+      const obj = {}; m.forEach(x => { if (x && x.id) obj[x.id] = x; });
+      jobs.push(db.ref('manual').update(obj));
+    }
+  } catch (_) { /* nothing migratable */ }
+  return Promise.all(jobs).then(() => localStorage.setItem('lfinder_migrated', '1'));
+}
+
+// One-time: seed coverage/leads from the local .js files if the DB is empty.
+function seedFromLocalFiles() {
+  const jobs = [];
+  jobs.push(db.ref('coverage').once('value').then(s => {
+    if (!s.exists() && window.COVERAGE_DATA.features.length)
+      return db.ref('coverage').set(window.COVERAGE_DATA);
+  }));
+  jobs.push(db.ref('leads').once('value').then(s => {
+    if (!s.exists() && window.LEADS_REGISTRY.length) {
+      const obj = {};
+      window.LEADS_REGISTRY.forEach(l => { if (l && l.id) obj[l.id] = l; });
+      return db.ref('leads').set(obj);
+    }
+  }));
+  return Promise.all(jobs);
+}
+
+function attachListeners() {
+  db.ref('coverage').on('value', s => {
+    const v = s.val() || {};
+    let feats = v.features || [];
+    if (!Array.isArray(feats)) feats = Object.values(feats);   // RTDB may key arrays
+    COVERAGE = {type: 'FeatureCollection', features: feats};
+    renderCoverage();
+  });
+  db.ref('leads').on('value', s => {
+    LEADS = s.val() || {};
+    scheduleRenderPins();
+    geocodeMissing();
+  });
+  db.ref('state').on('value', s => { STATE = s.val() || {}; scheduleRenderPins(); });
+  db.ref('manual').on('value', s => { MANUAL = s.val() || {}; scheduleRenderPins(); });
+  db.ref('geo').on('value', s => { GEO = s.val() || {}; scheduleRenderPins(); });
+}
+
+let inited = false;
+function initData() {
+  if (inited) return;
+  inited = true;
+  setStatus('Loading…');
+  seedFromLocalFiles()
+    .then(migrateLocalStorage)
+    .then(() => { attachListeners(); setTimeout(() => map.invalidateSize(), 120); })
+    .catch(e => { setStatus(''); console.error(e); });
+}
+
+auth.onAuthStateChanged(user => {
+  if (user) {
+    loginOverlay.style.display = 'none';
+    signoutBtn.style.display = 'block';
+    initData();
+  } else {
+    loginOverlay.style.display = 'flex';
+    signoutBtn.style.display = 'none';
+  }
+});
+</script>
+</body>
+</html>

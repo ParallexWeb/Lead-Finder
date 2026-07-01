@@ -1,3 +1,8 @@
 .env
 __pycache__/
 *.csv
+
+# Prospect data now lives in Firebase — never publish it via GitHub Pages.
+coverage.geojson
+coverage_data.js
+leads_data.js
